@@ -1,0 +1,12 @@
+{
+  "Макима_7652697216": [
+    {
+      "t": "привет",
+      "s": "user"
+    },
+    {
+      "t": "Error communicating with GPT4Free: Expecting value: line 1 column 1 (char 0)",
+      "s": "bot"
+    }
+  ]
+}
