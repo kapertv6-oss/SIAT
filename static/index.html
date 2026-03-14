@@ -2,218 +2,288 @@
 <html lang="ru">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Hakka AI</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Hakka AI Premium</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
-/* Твой стиль (тот что прислал) */
+:root {
+    --accent: #ff8c00;
+    --bg: #0b0b0e;
+    --card: rgba(255, 255, 255, 0.04);
+    --border: rgba(255, 255, 255, 0.08);
+    --glass: rgba(15, 15, 18, 0.85);
+}
+
+/* ====== Базовые стили ====== */
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; outline: none; }
+body { margin: 0; font-family: 'Inter', -apple-system, sans-serif; background: var(--bg); color: #efefef; height: 100vh; overflow: hidden; position: relative; }
+body::before { content: ""; position: fixed; top: -10%; left: -10%; width: 60%; height: 50%; background: radial-gradient(circle, rgba(255,140,0,0.12) 0%, transparent 70%); filter: blur(100px); z-index: -1; }
+header { padding: 18px; text-align: center; font-weight: 800; letter-spacing: 2px; background: var(--glass); backdrop-filter: blur(25px) saturate(160%); border-bottom: 1px solid var(--border); color: var(--accent); text-transform: uppercase; font-size: 14px; z-index: 100; position: relative; }
+
+/* ====== Экраны ====== */
+.screen { display: none; flex-direction: column; height: calc(100vh - 75px); overflow-y: auto; padding: 20px 16px 110px; position: absolute; width: 100%; top: 55px; }
+.screen.active { display: flex; animation: screenIn 0.4s cubic-bezier(0.2, 0.8, 0.2, 1); }
+@keyframes screenIn { from { opacity: 0; transform: translateY(15px) scale(0.98); } to { opacity: 1; transform: translateY(0) scale(1); } }
+
+/* ====== Карточки персонажей ====== */
+.hero-card { display: flex; align-items: center; padding: 14px; margin-bottom: 12px; background: var(--card); border: 1px solid var(--border); border-radius: 24px; transition: 0.3s cubic-bezier(0.4, 0, 0.2, 1); }
+.hero-card:active { transform: scale(0.96); background: rgba(255,255,255,0.08); }
+.hero-avatar { width: 54px; height: 54px; border-radius: 16px; background-size: cover; background-position: center; border: 1px solid rgba(255,255,255,0.1); box-shadow: 0 8px 20px rgba(0,0,0,0.4); margin-right: 14px; }
+.hero-info b { font-size: 16px; display: block; margin-bottom: 2px; }
+.hero-info small { color: #888; font-size: 12px; line-height: 1.2; display: block; }
+
+/* ====== Чат ====== */
+.chat-msgs { flex: 1; display: flex; flex-direction: column; gap: 8px; padding-bottom: 20px; }
+.bubble { padding: 12px 18px; border-radius: 20px; max-width: 80%; font-size: 15px; line-height: 1.4; animation: msgIn 0.4s cubic-bezier(0.18, 0.89, 0.32, 1.28); }
+.bubble-bot { background: #1c1c1f; align-self: flex-start; border-bottom-left-radius: 4px; border: 1px solid var(--border); }
+.bubble-user { background: var(--accent); color: #000; font-weight: 500; align-self: flex-end; border-bottom-right-radius: 4px; }
+@keyframes msgIn { from { opacity:0; transform: translateY(15px) scale(0.9); } to { opacity:1; transform: translateY(0) scale(1); } }
+
+/* ====== Поле ввода ====== */
+#chat-input-box { position: fixed; bottom: 85px; left: 16px; right: 16px; background: var(--glass); backdrop-filter: blur(20px); padding: 8px; border-radius: 24px; border: 1px solid var(--border); display: flex; gap: 8px; z-index: 99; }
+.modern-input { width: 100%; padding: 14px 18px; background: rgba(255,255,255,0.05); border: 1px solid transparent; border-radius: 18px; color: white; font-size: 15px; transition: 0.3s; }
+.modern-input:focus { border-color: var(--accent); background: rgba(255,255,255,0.08); }
+.btn { background: var(--accent); border: none; padding: 12px 22px; border-radius: 18px; font-weight: 700; color: black; cursor: pointer; transition: 0.2s; }
+.btn:active { transform: scale(0.9); opacity: 0.8; }
+
+/* ====== Уведомления ====== */
+#notif-container { position: fixed; top: 20px; left: 20px; right: 20px; z-index: 9999; display: flex; flex-direction: column; gap: 8px; pointer-events: none; }
+.toast { pointer-events: auto; background: rgba(255, 255, 255, 0.1); backdrop-filter: blur(15px) saturate(150%); border: 1px solid var(--border); padding: 14px 20px; border-radius: 20px; color: white; font-size: 14px; font-weight: 500; box-shadow: 0 10px 30px rgba(0,0,0,0.3); display: flex; align-items: center; gap: 10px; animation: toastIn 0.5s forwards; }
+.toast.hide { animation: toastOut 0.4s ease forwards; }
+@keyframes toastIn { from { transform: translateY(-100px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+@keyframes toastOut { to { transform: scale(0.8); opacity: 0; filter: blur(10px); } }
+
+/* ====== Профиль ====== */
+.profile-container { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; width: 100%; gap: 25px; }
+.avatar-wrapper { position: relative; cursor: pointer; }
+#p-avatar { width: 130px; height: 130px; border-radius: 45px; background: #1a1a1c; background-size: cover; background-position: center; border: 3px solid var(--accent); box-shadow: 0 10px 40px rgba(255, 140, 0, 0.2); position: relative; z-index: 2; }
+.avatar-wrapper::after { content: ''; position: absolute; top: 0; left: 0; right: 0; bottom: 0; border-radius: 45px; border: 2px solid var(--accent); animation: pulseAvatar 2s infinite; z-index: 1; }
+@keyframes pulseAvatar { 0% { transform: scale(1); opacity: 0.5; } 100% { transform: scale(1.3); opacity: 0; } }
+.profile-info-card { width: 100%; background: var(--card); padding: 24px; border-radius: 30px; border: 1px solid var(--border); text-align: center; }
+
+/* ====== Навигация ====== */
+.nav-bar { position: fixed; bottom: 0; left: 0; right: 0; height: 75px; background: var(--glass); backdrop-filter: blur(30px); border-top: 1px solid var(--border); display: flex; padding-bottom: env(safe-area-inset-bottom); z-index: 100; }
+.nav-item { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; color: #555; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; transition: 0.3s; }
+.nav-item.active { color: var(--accent); }
+
+/* ====== Печатает... ====== */
+.typing-bubble { display: flex; gap: 4px; padding: 12px 18px; border-radius: 20px; background: #1c1c1f; width: fit-content; }
+.dot { width: 6px; height: 6px; background: #555; border-radius: 50%; animation: dotB 1.4s infinite; }
+.dot:nth-child(2) { animation-delay: 0.2s; }
+.dot:nth-child(3) { animation-delay: 0.4s; }
+@keyframes dotB { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-5px); } }
 </style>
 </head>
 <body>
+
 <header id="h-title">HAKKA AI</header>
 <div id="notif-container"></div>
 
-<!-- ГЕРОИ -->
+<!-- ====== Герои ====== -->
 <div id="scr-heroes" class="screen active">
-<input id="search-input" class="modern-input" placeholder="Поиск персонажа..." style="margin-bottom: 20px;">
-<div id="hero-list"></div>
+    <input id="search-input" class="modern-input" placeholder="Поиск персонажа..." style="margin-bottom: 20px;">
+    <div id="hero-list"></div>
 </div>
 
-<!-- ЧАТ -->
+<!-- ====== Чат ====== -->
 <div id="scr-chat" class="screen">
-<div style="display:flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
-<div onclick="nav('scr-heroes')" style="color:orange; font-weight: bold; cursor:pointer;">←</div>
-<div id="chat-hero-name" style="font-weight: 800; font-size: 18px;">Чат</div>
-<div onclick="clearChat()" style="color:#555; font-size: 12px; cursor:pointer;">Очистить</div>
-</div>
-<div id="chat-messages" class="chat-msgs"></div>
-<div id="chat-input-box">
-<input id="chat-input" class="modern-input" placeholder="Ваше сообщение...">
-<button class="btn" onclick="sendMessage()">🚀</button>
-</div>
+    <div style="display:flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+        <div onclick="nav('scr-heroes')" style="color:var(--accent); font-weight: bold; cursor:pointer;">←</div>
+        <div id="chat-hero-name" style="font-weight: 800; font-size: 18px;">Чат</div>
+        <div onclick="clearChat()" style="color:#555; font-size: 12px; cursor:pointer;">Очистить</div>
+    </div>
+    <div id="chat-messages" class="chat-msgs"></div>
+    <div id="chat-input-box">
+        <input id="chat-input" class="modern-input" placeholder="Ваше сообщение...">
+        <button class="btn" onclick="sendMessage()">🚀</button>
+    </div>
 </div>
 
-<!-- ПРОФИЛЬ -->
+<!-- ====== Профиль ====== -->
 <div id="scr-profile" class="screen">
-<div class="profile-container">
-<label class="avatar-wrapper">
-<div id="p-avatar"></div>
-<input type="file" id="avatar-upload" style="display:none" onchange="changeAvatar(event)">
-</label>
-<div class="profile-info-card">
-<h2 id="my-id">ID: ---</h2>
-<div id="user-role"></div>
-<input id="user-nickname" class="modern-input" placeholder="Введите никнейм" onchange="saveNick(this.value)">
-</div>
-</div>
+    <div class="profile-container">
+        <label class="avatar-wrapper">
+            <div id="p-avatar"></div>
+            <input type="file" id="avatar-upload" style="display:none" onchange="changeAvatar(event)">
+        </label>
+        <div class="profile-info-card">
+            <h2 id="my-id" style="margin:0 0 10px 0;">ID: ---</h2>
+            <div id="user-role" style="font-size:11px; font-weight:800; color:var(--accent); margin-bottom:20px; text-transform:uppercase;"></div>
+            <div style="text-align:left;">
+                <small style="color:#555; margin-left:10px;">ВАШ НИКНЕЙМ</small>
+                <input id="user-nickname" class="modern-input" placeholder="Введите ник..." onchange="saveNick(this.value)">
+            </div>
+        </div>
+    </div>
 </div>
 
-<!-- АДМИНКА -->
+<!-- ====== Админка ====== -->
 <div id="scr-admin" class="screen">
-<div id="admin-box" style="display:none">
-<input id="adm-name" class="modern-input" placeholder="Имя героя">
-<textarea id="adm-desc" class="modern-input" placeholder="Описание/Промпт"></textarea>
-<input type="file" id="adm-file" onchange="previewHeroImg(event)">
-<div id="adm-prev" style="width:100%; height:120px; border-radius:20px; background-size:cover;"></div>
-<button class="btn" onclick="saveHero()">Сохранить</button>
-</div>
-<div id="no-admin" style="text-align:center; margin-top: 50px;">🔒 Доступ ограничен</div>
+    <div id="admin-box" style="display:none">
+        <input id="adm-name" class="modern-input" placeholder="Имя героя" style="margin-bottom:10px">
+        <textarea id="adm-desc" class="modern-input" placeholder="Описание" style="margin-bottom:10px; height: 100px;"></textarea>
+        <input type="file" id="adm-file" onchange="previewHeroImg(event)" style="margin-bottom:10px">
+        <div id="adm-prev" style="width:100%; height:120px; border-radius:20px; background-size:cover; background-position:center; margin-bottom:15px; background-color: #1a1a1c; border: 1px solid var(--border);"></div>
+        <button class="btn" onclick="saveHero()" style="width:100%">Сохранить</button>
+    </div>
+    <div id="no-admin" style="text-align:center; margin-top: 50px; opacity: 0.5;">🔒 Доступ ограничен</div>
 </div>
 
+<!-- ====== Навигация ====== -->
 <nav class="nav-bar">
-<div class="nav-item active" onclick="nav('scr-heroes',this)">Персонажи</div>
-<div class="nav-item" onclick="nav('scr-admin',this)">Создать</div>
-<div class="nav-item" onclick="nav('scr-profile',this)">Профиль</div>
+    <div class="nav-item active" onclick="nav('scr-heroes',this)">Персонажи</div>
+    <div class="nav-item" onclick="nav('scr-admin',this)">Создать</div>
+    <div class="nav-item" onclick="nav('scr-profile',this)">Профиль</div>
 </nav>
 
 <script>
-const API_URL = "http://127.0.0.1:3000";
+// ====== Переменные ======
+const tg = window.Telegram?.WebApp;
+const API_URL = "http://127.0.0.1:3000"; // сюда будет твой сервер
 const USER_ROLES = {6625239442:{title:"Владелец",color:"#ff3b3b"},7652697216:{title:"Разработчик",color:"#3b8cff"}};
 const ADMIN_IDS = Object.keys(USER_ROLES).map(Number);
-
-let MY_ID = 0, heroes=[], currentHero=null, selectedIdx=null, tempImg="", typingElement=null;
+let MY_ID = 0, heroes = [], currentHero = null, selectedIdx = null, tempImg = "", typingElement = null;
 let userName = localStorage.getItem("h_username") || "Пользователь";
 
-// Уведомления
+// ====== Уведомления ======
 function showNotification(msg){
-  const container = document.getElementById('notif-container');
-  const toast = document.createElement('div');
-  toast.className = 'toast'; toast.innerText = msg;
-  container.appendChild(toast);
-  setTimeout(()=>{ toast.remove(); },3000);
+    const container = document.getElementById('notif-container');
+    const toast = document.createElement('div');
+    toast.className = 'toast';
+    toast.innerHTML = `<span style="color:var(--accent)">✦</span> <span>${msg}</span>`;
+    container.appendChild(toast);
+    setTimeout(()=>{ toast.classList.add('hide'); setTimeout(()=>toast.remove(),400); },3000);
 }
 
-// Навигация
+// ====== Навигация ======
 function nav(id, el){
-  document.querySelectorAll(".screen").forEach(s=>s.classList.remove("active"));
-  document.getElementById(id).classList.add("active");
-  if(el){
-    document.querySelectorAll(".nav-item").forEach(n=>n.classList.remove("active"));
-    el.classList.add("active");
-  }
+    document.querySelectorAll(".screen").forEach(s=>s.classList.remove("active"));
+    document.getElementById(id).classList.add("active");
+    if(el){ document.querySelectorAll(".nav-item").forEach(n=>n.classList.remove("active")); el.classList.add("active"); }
 }
 
-// Загрузка персонажей
+// ====== Герои ======
 async function loadHeroes(){
-  try{
-    const r = await fetch(`${API_URL}/api/characters`);
-    heroes = await r.json();
-    renderHeroes();
-  }catch(e){console.log("offline");}
+    try{
+        const r = await fetch(`${API_URL}/api/characters`);
+        heroes = await r.json();
+        renderHeroes();
+    }catch(e){ console.log("offline"); }
 }
 
 function renderHeroes(){
-  const list = document.getElementById("hero-list");
-  const isAdm = ADMIN_IDS.includes(MY_ID);
-  list.innerHTML = heroes.map((h,i)=>`
-    <div class="hero-card" onclick="openHero(${i})">
-      <div class="hero-avatar" style="background-image:url(${h.img})"></div>
-      <div class="hero-info"><b>${h.name}</b><small>${h.desc.substring(0,40)}...</small></div>
-      ${isAdm?`<div onclick="event.stopPropagation(); editHero(${i})">✏️</div>`:""}
-    </div>`).join("");
+    const list = document.getElementById("hero-list");
+    const isAdm = ADMIN_IDS.includes(Number(MY_ID));
+    list.innerHTML = heroes.map((h,i)=>`
+        <div class="hero-card" onclick="openHero(${i})">
+            <div class="hero-avatar" style="background-image:url(${h.img})"></div>
+            <div class="hero-info" style="flex:1">
+                <b>${h.name}</b>
+                <small>${h.desc.substring(0,40)}...</small>
+            </div>
+            ${isAdm?`<div onclick="event.stopPropagation(); editHero(${i})">✏️</div>`:""}
+        </div>
+    `).join("");
 }
 
 function openHero(i){
-  selectedIdx=i;
-  currentHero=heroes[i];
-  document.getElementById("chat-hero-name").innerText=currentHero.name;
-  nav("scr-chat");
-  clearChat();
+    selectedIdx = i;
+    currentHero = heroes[i];
+    document.getElementById("chat-hero-name").innerText = currentHero.name;
+    nav("scr-chat");
+    clearChat();
 }
 
-// Чат
+// ====== Чат ======
 async function sendMessage(){
-  const inp=document.getElementById("chat-input");
-  const txt=inp.value.trim();
-  if(!txt||!currentHero) return;
-  addMsg(txt,'user'); inp.value=''; showTyping();
-  try{
-    const r = await fetch(`${API_URL}/api/chat`,{
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({message:txt,charName:currentHero.name,userId:MY_ID,userName})
-    });
-    const d = await r.json(); hideTyping(); addMsg(d.reply,'bot');
-  }catch(e){ hideTyping(); addMsg("Ошибка AI",'bot'); }
+    const inp = document.getElementById("chat-input");
+    const txt = inp.value.trim();
+    if(!txt||!currentHero) return;
+    addMsg(txt,'user'); inp.value=''; showTyping();
+    try{
+        const r = await fetch(`${API_URL}/api/chat`,{
+            method:'POST', headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({message:txt,charName:currentHero.name,userId:MY_ID,userName})
+        });
+        const d = await r.json(); hideTyping(); addMsg(d.reply,'bot');
+    }catch(e){ hideTyping(); addMsg("Ошибка AI",'bot'); }
 }
 
 function addMsg(t,s){
-  const c=document.getElementById("chat-messages");
-  const d=document.createElement("div");
-  d.className=`bubble bubble-${s}`; d.innerText=t;
-  c.appendChild(d); c.scrollTo({top:c.scrollHeight, behavior:'smooth'});
+    const c = document.getElementById("chat-messages");
+    const d = document.createElement("div");
+    d.className = `bubble bubble-${s}`;
+    d.innerText = t;
+    c.appendChild(d);
+    c.scrollTo({top:c.scrollHeight,behavior:'smooth'});
 }
 
 function showTyping(){
-  const chat=document.getElementById("chat-messages");
-  typingElement=document.createElement("div");
-  typingElement.className="typing-bubble";
-  typingElement.innerHTML='<div class="dot"></div><div class="dot"></div><div class="dot"></div>';
-  chat.appendChild(typingElement); chat.scrollTop=chat.scrollHeight;
+    const chat = document.getElementById("chat-messages");
+    typingElement = document.createElement("div");
+    typingElement.className = "typing-bubble";
+    typingElement.innerHTML = '<div class="dot"></div><div class="dot"></div><div class="dot"></div>';
+    chat.appendChild(typingElement);
+    chat.scrollTop = chat.scrollHeight;
 }
 function hideTyping(){ if(typingElement) typingElement.remove(); }
-function clearChat(){document.getElementById("chat-messages").innerHTML="";}
-function saveNick(val){ localStorage.setItem("h_username",val); userName=val; showNotification("Ник обновлен!");}
+function clearChat(){ document.getElementById("chat-messages").innerHTML=""; }
+function saveNick(val){ localStorage.setItem("h_username",val); userName=val; showNotification("Ник обновлен!"); }
 
-// Админка
-function previewHeroImg(e){
-  const file=e.target.files[0]; if(!file) return;
-  const r=new FileReader();
-  r.onload=()=>{tempImg=r.result; document.getElementById("adm-prev").style.backgroundImage=`url(${tempImg})`;}
-  r.readAsDataURL(file);
-}
-
-async function saveHero(){
-  const name=document.getElementById("adm-name").value;
-  const desc=document.getElementById("adm-desc").value;
-  if(!name||!tempImg) return showNotification("Заполните имя и картинку");
-  const payload={adminId:MY_ID, character:{name,desc,img:tempImg}, index:selectedIdx};
-  const r=await fetch(`${API_URL}/api/characters`,{
-    method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)
-  });
-  const d=await r.json();
-  if(d.success){ showNotification(`Персонаж ${name} добавлен!`);
-    loadHeroes(); selectedIdx=null; document.getElementById("adm-name").value='';
-    document.getElementById("adm-desc").value=''; document.getElementById("adm-prev").style.backgroundImage='';
-    tempImg='';
-  }else showNotification(d.error||"Ошибка добавления");
-}
-
-function editHero(i){
-  const hero=heroes[i]; selectedIdx=i;
-  document.getElementById("adm-name").value=hero.name;
-  document.getElementById("adm-desc").value=hero.desc;
-  tempImg=hero.img; document.getElementById("adm-prev").style.backgroundImage=`url(${hero.img})`;
-  nav("scr-admin");
-}
-
-// Профиль
-function changeAvatar(e){
-  const r=new FileReader();
-  r.onload=()=>{ localStorage.setItem("user_avatar",r.result);
-    document.getElementById("p-avatar").style.backgroundImage=`url(${r.result})`;
-    showNotification("Аватар сохранен!"); };
-  r.readAsDataURL(e.target.files[0]);
-}
-
+// ====== Телеграм ======
 function initTelegram(){
-  const tg = window.Telegram?.WebApp;
-  if(!tg) return;
-  tg.ready(); tg.expand();
-  if(tg.initDataUnsafe?.user){ MY_ID=tg.initDataUnsafe.user.id; userName=tg.initDataUnsafe.user.first_name||userName; }
-  updateUI();
+    if(!tg) return;
+    tg.ready(); tg.expand();
+    if(tg.initDataUnsafe?.user){
+        MY_ID=tg.initDataUnsafe.user.id;
+        userName=tg.initDataUnsafe.user.first_name||userName;
+    }
+    updateUI();
 }
 
 function updateUI(){
-  document.getElementById("my-id").innerText=`ID: ${MY_ID}`;
-  document.getElementById("user-nickname").value=userName;
-  const isAdm = ADMIN_IDS.includes(MY_ID);
-  document.getElementById("admin-box").style.display=isAdm?"block":"none";
-  document.getElementById("no-admin").style.display=isAdm?"none":"block";
-  const roleBox=document.getElementById("user-role");
-  if(USER_ROLES[MY_ID]) roleBox.innerText=USER_ROLES[MY_ID].title;
-  const savedAvatar = localStorage.getItem("user_avatar");
-  if(savedAvatar) document.getElementById("p-avatar").style.backgroundImage=`url(${savedAvatar})`;
+    document.getElementById("my-id").innerText=`ID: ${MY_ID}`;
+    document.getElementById("user-nickname").value=userName;
+    const isAdm = ADMIN_IDS.includes(Number(MY_ID));
+    document.getElementById("admin-box").style.display=isAdm?"block":"none";
+    document.getElementById("no-admin").style.display=isAdm?"none":"block";
+    const roleBox=document.getElementById("user-role");
+    if(USER_ROLES[MY_ID]) roleBox.innerText=USER_ROLES[MY_ID].title;
+    const savedAvatar=localStorage.getItem("user_avatar");
+    if(savedAvatar) document.getElementById("p-avatar").style.backgroundImage=`url(${savedAvatar})`;
 }
 
+function changeAvatar(e){
+    const r=new FileReader();
+    r.onload=()=>{ localStorage.setItem("user_avatar",r.result); document.getElementById("p-avatar").style.backgroundImage=`url(${r.result})`; showNotification("Аватар сохранен!"); }
+    r.readAsDataURL(e.target.files[0]);
+}
+
+// ====== Админка ======
+function previewHeroImg(e){
+    const f=e.target.files[0]; if(!f) return;
+    const reader=new FileReader();
+    reader.onload=()=>{ tempImg=reader.result; document.getElementById("adm-prev").style.backgroundImage=`url(${tempImg})`; }
+    reader.readAsDataURL(f);
+}
+
+async function saveHero(){
+    const name=document.getElementById("adm-name").value.trim();
+    const desc=document.getElementById("adm-desc").value.trim();
+    if(!name||!desc) return showNotification("Введите имя и описание!");
+    try{
+        const r=await fetch(`${API_URL}/api/characters`,{
+            method:"POST", headers:{"Content-Type":"application/json"},
+            body:JSON.stringify({name,desc,img:tempImg||"",authorId:MY_ID})
+        });
+        if(!r.ok) throw new Error("Ошибка сервера");
+        const hero=await r.json();
+        heroes.push(hero); renderHeroes(); showNotification(`Персонаж "${hero.name}" добавлен!`);
+        document.getElementById("adm-name").value=""; document.getElementById("adm-desc").value=""; tempImg=""; document.getElementById("adm-prev").style.backgroundImage="";
+    }catch(e){ showNotification("Ошибка сервера"); console.error(e); }
+}
+
+// ====== Запуск ======
 window.onload=()=>{ initTelegram(); loadHeroes(); };
 </script>
 </body>
