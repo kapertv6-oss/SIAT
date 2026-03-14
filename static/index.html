@@ -11,8 +11,6 @@
 --bg:#050506;
 --card:rgba(255,255,255,0.03);
 --border:rgba(255,255,255,0.08);
---success:#4caf50;
---error:#f44336;
 }
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
 body{margin:0;font-family:-apple-system,sans-serif;background:var(--bg);color:white;height:100vh;overflow:hidden;position:relative;}
@@ -56,8 +54,9 @@ header{padding:16px;text-align:center;font-weight:800;background:rgba(0,0,0,0.6)
 #chat-input-box{display:flex;gap:10px;align-items:center;padding:10px;position:sticky;bottom:70px;background:rgba(5,5,6,0.9);backdrop-filter:blur(10px);}
 #chat-input-box input{padding:14px 16px;}
 #chat-input-box button{padding:14px 18px;}
-#notification{position:fixed;top:20px;left:50%;transform:translateX(-50%);padding:14px 24px;border-radius:16px;font-weight:700;color:black;display:none;z-index:999;}
-#scr-profile{padding-top:100px;}
+.notification{
+  position:fixed;top:80px;right:20px;background:linear-gradient(135deg,#ff8c00,#ffb347);padding:16px 24px;border-radius:20px;color:black;font-weight:700;box-shadow:0 5px 20px rgba(255,140,0,0.5);animation:slideIn 0.5s forwards;z-index:9999;}
+@keyframes slideIn{from{opacity:0;transform:translateX(100px);}to{opacity:1;transform:translateX(0);}}
 </style>
 </head>
 <body>
@@ -96,7 +95,7 @@ header{padding:16px;text-align:center;font-weight:800;background:rgba(0,0,0,0.6)
 </div>
 
 <!-- PROFILE -->
-<div id="scr-profile" class="screen" style="text-align:center;">
+<div id="scr-profile" class="screen" style="text-align:center;padding-top:20px;">
 <label style="cursor:pointer;display:block;margin-bottom:15px;">
 <div id="p-avatar" style="width:120px;height:120px;border-radius:30px;background:#222;margin:auto;background-size:cover"></div>
 <input type="file" id="avatar-upload" style="display:none" onchange="changeAvatar(event)">
@@ -104,7 +103,7 @@ header{padding:16px;text-align:center;font-weight:800;background:rgba(0,0,0,0.6)
 <div style="margin-bottom:8px;font-size:14px;color:#aaa;">Ваш ID:</div>
 <div id="my-id" style="margin-bottom:10px;font-weight:700;font-size:16px;color:var(--accent)">ID: ---</div>
 <input id="user-nickname" class="modern-input" style="width:220px;margin:auto;text-align:center;margin-bottom:10px;" placeholder="Введите никнейм">
-<div id="user-role" style="margin-bottom:20px;font-size:14px;"></div>
+<div id="user-role" style="margin-top:6px;font-size:13px"></div>
 </div>
 
 <!-- NAV -->
@@ -113,8 +112,6 @@ header{padding:16px;text-align:center;font-weight:800;background:rgba(0,0,0,0.6)
 <div class="nav-item" onclick="nav('scr-admin',this)">Админ</div>
 <div class="nav-item" onclick="nav('scr-profile',this)">Профиль</div>
 </nav>
-
-<div id="notification"></div>
 
 <script>
 const tg = window.Telegram?.WebApp;
@@ -125,7 +122,6 @@ const ADMIN_IDS = Object.keys(USER_ROLES).map(Number);
 let MY_ID = 0, heroes = [], currentHero = null, selectedIdx = null, tempImg = "", typingElement = null;
 let userName = localStorage.getItem("h_username") || "Пользователь";
 
-/* INIT */
 function initTelegram(){
   if(!tg) return;
   tg.ready(); tg.expand();
@@ -136,7 +132,15 @@ function initTelegram(){
   updateUI();
 }
 
-/* NAVIGATION */
+function showNotification(msg){
+  const n = document.createElement("div");
+  n.className="notification";
+  n.innerText = msg;
+  document.body.appendChild(n);
+  setTimeout(()=>{n.remove()},3000);
+}
+
+/* NAV */
 function nav(id,el){
   document.querySelectorAll(".screen").forEach(s=>s.classList.remove("active"));
   document.getElementById(id).classList.add("active");
@@ -160,7 +164,10 @@ function renderHeroes(){
     <div class="hero-card">
       <div style="display:flex;align-items:center;gap:10px;flex:1;cursor:pointer" onclick="openHero(${i})">
         <div class="hero-avatar" style="background-image:url(${h.img})"></div>
-        <b>${h.name}</b>
+        <div>
+          <b>${h.name}</b><br>
+          <small>${h.desc}</small>
+        </div>
       </div>
       ${isAdm?`<div style="display:flex;gap:10px">
         <span onclick="editHero(${i});event.stopPropagation()" style="cursor:pointer">✏️</span>
@@ -174,6 +181,7 @@ function openHero(i){
   currentHero = heroes[i];
   document.getElementById("chat-hero-name").innerText = currentHero.name;
   nav("scr-chat");
+  clearChat();
 }
 
 /* CHAT */
@@ -196,7 +204,12 @@ async function sendMessage(){
     const r = await fetch(`${API_URL}/api/chat`,{
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({message: txt,charName: currentHero.name,userId: MY_ID,userName: userName})
+      body:JSON.stringify({
+        message: txt,
+        charName: currentHero.name,
+        userId: MY_ID,
+        userName: userName
+      })
     });
     const d = await r.json(); hideTyping();
     addMsg(d.reply,'bot');
@@ -213,7 +226,7 @@ function addMsg(t,s){
 }
 function clearChat(){document.getElementById("chat-messages").innerHTML="";}
 
-/* --- ADMIN --- */
+/* ADMIN */
 function previewHeroImg(e){
   const file = e.target.files[0];
   if(!file) return;
@@ -222,54 +235,25 @@ function previewHeroImg(e){
   r.readAsDataURL(file);
 }
 
-function showNotification(msg,type='success'){
-  const n = document.getElementById("notification");
-  n.innerText = msg;
-  n.style.backgroundColor = type==='success'? 'var(--success)' : 'var(--error)';
-  n.style.display='block';
-  setTimeout(()=>{ n.style.display='none'; },2500);
-}
-
 async function saveHero(){
-  const name = document.getElementById("adm-name").value.trim();
-  const desc = document.getElementById("adm-desc").value.trim();
-  if(!name || !desc || !tempImg) return alert("Заполните все поля.");
-
-  const character = {name, desc, img: tempImg};
-
-  try {
-    let d;
-    if(selectedIdx===null){
-      const r = await fetch(`${API_URL}/api/characters`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({character})});
-      d = await r.json();
-      if(d.status!=="ok") return alert(d.msg);
-      showNotification("Персонаж добавлен");
-    } else {
-      const r = await fetch(`${API_URL}/api/characters/${selectedIdx}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({character})});
-      d = await r.json();
-      if(d.status!=="ok") return alert(d.msg);
-      showNotification("Персонаж обновлен");
-    }
-  } catch(e){ console.error(e); return alert("Ошибка сервера"); }
-
-  document.getElementById("adm-name").value='';
-  document.getElementById("adm-desc").value='';
-  document.getElementById("adm-prev").style.backgroundImage='';
-  tempImg=''; selectedIdx=null;
-  loadHeroes();
+  const name = document.getElementById("adm-name").value;
+  const desc = document.getElementById("adm-desc").value;
+  if(!name||!tempImg) return;
+  const payload = {adminId:MY_ID, character:{name,desc,img:tempImg}};
+  if(selectedIdx !== null) payload.index = selectedIdx;
+  const r = await fetch(`${API_URL}/api/characters`,{
+    method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)
+  });
+  const d = await r.json();
+  if(d.status==="ok"){ showNotification("Персонаж добавлен!"); loadHeroes(); }
+  document.getElementById("adm-name").value=''; document.getElementById("adm-desc").value=''; document.getElementById("adm-prev").style.backgroundImage=''; tempImg = ''; selectedIdx=null;
 }
 
 async function deleteHero(i){
   if(!confirm("Удалить персонажа?")) return;
-  try{
-    const r = await fetch(`${API_URL}/api/characters/${i}`,{method:'DELETE'});
-    const d = await r.json();
-    if(d.status!=="ok") return alert(d.msg);
-    showNotification("Персонаж удален","error");
-  }catch(e){ console.error(e); return alert("Ошибка сервера"); }
+  await fetch(`${API_URL}/api/characters/${i}?adminId=${MY_ID}`,{method:'DELETE'});
   loadHeroes();
 }
-
 function editHero(i){
   const hero = heroes[i];
   document.getElementById("adm-name").value = hero.name;
@@ -303,7 +287,12 @@ function updateUI(){
   if(savedAvatar) document.getElementById("p-avatar").style.backgroundImage = `url(${savedAvatar})`;
 }
 
-window.addEventListener('resize',()=>{ const scr=document.querySelector('.screen.active'); if(scr) scr.scrollTop = scr.scrollHeight; });
+/* MOBILE KEYBOARD FIX */
+window.addEventListener('resize',()=>{ 
+  const scr = document.querySelector('.screen.active');
+  if(scr) scr.scrollTop = scr.scrollHeight;
+});
+
 window.onload = ()=>{initTelegram(); updateUI(); loadHeroes();}
 </script>
 </body>
