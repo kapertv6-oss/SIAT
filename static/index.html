@@ -112,13 +112,14 @@ header{padding:16px;text-align:center;font-weight:800;background:rgba(0,0,0,0.6)
 
 <script>
 const tg = window.Telegram?.WebApp;
-const API_URL = "http://127.0.0.1:3000"; // локальный сервер, поменяй на ngrok когда нужно
+const API_URL = "http://127.0.0.1:3000"; // меняй на Render URL при деплое
 const USER_ROLES = {6625239442:{title:"Владелец проекта",color:"#ff3b3b"},7652697216:{title:"Разработчик",color:"#3b8cff"}};
 const ADMIN_IDS = Object.keys(USER_ROLES).map(Number);
 
 let MY_ID = 0, heroes = [], currentHero = null, selectedIdx = null, tempImg = "", typingElement = null;
 let userName = localStorage.getItem("h_username") || "Пользователь";
 
+/* INIT */
 function initTelegram(){
   if(!tg) return;
   tg.ready(); tg.expand();
@@ -129,7 +130,7 @@ function initTelegram(){
   updateUI();
 }
 
-/* NAV */
+/* NAVIGATION */
 function nav(id,el){
   document.querySelectorAll(".screen").forEach(s=>s.classList.remove("active"));
   document.getElementById(id).classList.add("active");
@@ -212,36 +213,69 @@ function addMsg(t,s){
 }
 function clearChat(){document.getElementById("chat-messages").innerHTML="";}
 
-/* ADMIN */
+/* --- ADMIN FUNCTIONS --- */
 function previewHeroImg(e){
   const file = e.target.files[0];
   if(!file) return;
   const r = new FileReader();
-  r.onload = ()=>{tempImg = r.result; document.getElementById("adm-prev").style.backgroundImage = `url(${tempImg})`;}
+  r.onload = () => {
+    tempImg = r.result;
+    document.getElementById("adm-prev").style.backgroundImage = `url(${tempImg})`;
+  };
   r.readAsDataURL(file);
 }
 
 async function saveHero(){
-  const name = document.getElementById("adm-name").value;
-  const desc = document.getElementById("adm-desc").value;
-  if(!name||!tempImg) return;
-  const payload = {adminId:MY_ID, character:{name,desc,img:tempImg}};
-  if(selectedIdx !== null) payload.index = selectedIdx;
-  const r = await fetch(`${API_URL}/api/characters`,{
-    method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)
-  });
-  document.getElementById("adm-name").value='';
-  document.getElementById("adm-desc").value='';
-  document.getElementById("adm-prev").style.backgroundImage='';
-  tempImg = ''; selectedIdx=null;
+  const name = document.getElementById("adm-name").value.trim();
+  const desc = document.getElementById("adm-desc").value.trim();
+  if(!name || !desc || !tempImg) return alert("Заполните имя, описание и выберите изображение.");
+
+  const character = {name, desc, img: tempImg};
+
+  try {
+    if(selectedIdx === null){
+      const r = await fetch(`${API_URL}/api/characters`, {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({character})
+      });
+      const d = await r.json();
+      if(d.status !== "ok") return alert("Ошибка: " + d.msg);
+    } else {
+      const r = await fetch(`${API_URL}/api/characters/${selectedIdx}`, {
+        method: 'PUT',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({character})
+      });
+      const d = await r.json();
+      if(d.status !== "ok") return alert("Ошибка: " + d.msg);
+    }
+  } catch(e){
+    console.error(e);
+    return alert("Ошибка связи с сервером.");
+  }
+
+  document.getElementById("adm-name").value = '';
+  document.getElementById("adm-desc").value = '';
+  document.getElementById("adm-prev").style.backgroundImage = '';
+  tempImg = '';
+  selectedIdx = null;
   loadHeroes();
 }
 
 async function deleteHero(i){
   if(!confirm("Удалить персонажа?")) return;
-  await fetch(`${API_URL}/api/characters/${i}?adminId=${MY_ID}`,{method:'DELETE'});
+  try{
+    const r = await fetch(`${API_URL}/api/characters/${i}`, {method:'DELETE'});
+    const d = await r.json();
+    if(d.status !== "ok") return alert("Ошибка: " + d.msg);
+  }catch(e){
+    console.error(e);
+    return alert("Ошибка связи с сервером.");
+  }
   loadHeroes();
 }
+
 function editHero(i){
   const hero = heroes[i];
   document.getElementById("adm-name").value = hero.name;
