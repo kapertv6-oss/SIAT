@@ -1,454 +1,3 @@
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import List, Optional
-import httpx
-import uvicorn
-import json
-import os
-import uuid
-
-app = FastAPI()
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"], 
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# --- НАСТРОЙКИ TELEGRAM ---
-# ВНИМАНИЕ: Вставь сюда НОВЫЙ токен, старый скомпрометирован!
-TELEGRAM_BOT_TOKEN = "8451702244:AAEjoFQDkPW5y2Y0GMG_1HJlXyH2MQKKU18"
-
-# Цены из магазина (Коины : Звёзды Telegram)
-STARS_PACKAGES = {
-    25: 39,
-    100: 63,
-    500: 290,
-    1000: 530,
-    10000: 4800,
-    100000: 39000 
-}
-
-# Настройки реферальной системы (Коины)
-REF_REWARD_REFERRER = 50  # Сколько получает тот, кто пригласил
-REF_REWARD_NEW_USER = 25  # Сколько получает тот, кто перешел по ссылке
-
-@app.get("/")
-async def root():
-    return {"status": "ok", "message": "Hakka AI API is working"}
-
-# ВНИМАНИЕ: Вставь сюда НОВЫЙ ключ, старый скомпрометирован!
-OPENROUTER_API_KEY = "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"
-OPENROUTER_MODEL = "nousresearch/hermes-3-llama-3.1-70b"
-
-ADMIN_IDS = [6625239442, 7652697216]
-DB_FILE = "database.json"
-
-default_data = {
-    "heroes": [], 
-    "tasks": [
-        {"name": "Подпишись на канал", "link": "https://t.me/telegram"}
-    ],
-    "users": {},
-    "promocodes": {},
-    "activated_promos": {},
-    "referrals_claimed": {}, # {"new_user_id": "referrer_id"}
-    "referrals_stats": {}    # {"user_id": count_of_invites}
-}
-
-def load_db():
-    if not os.path.exists(DB_FILE):
-        save_db(default_data)
-        return default_data
-    with open(DB_FILE, "r", encoding="utf-8") as f:
-        data = json.load(f)
-        if "users" not in data: data["users"] = {}
-        if "promocodes" not in data: data["promocodes"] = {}
-        if "activated_promos" not in data: data["activated_promos"] = {}
-        if "referrals_claimed" not in data: data["referrals_claimed"] = {}
-        if "referrals_stats" not in data: data["referrals_stats"] = {}
-        return data
-
-def save_db(data):
-    with open(DB_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=4)
-
-db = load_db()
-
-# --- МОДЕЛИ ДАННЫХ ---
-class Character(BaseModel):
-    name: str
-    desc: str
-    img: str  
-    category: Optional[str] = "Аниме"
-
-class Task(BaseModel):
-    name: str
-    link: str
-
-class AdminAction(BaseModel):
-    adminId: int
-    character: Optional[Character] = None
-    task: Optional[Task] = None
-    index: Optional[int] = None
-
-class TokenAction(BaseModel):
-    adminId: int
-    targetId: int
-    amount: int
-    reason: str
-
-class PaymentRequest(BaseModel):
-    userId: int
-    stars: int
-    tokens: int
-
-class PromoCreate(BaseModel):
-    adminId: int
-    code: str
-    reward: int
-    uses: int
-
-class PromoActivate(BaseModel):
-    userId: int
-    code: str
-
-class ReferralActivate(BaseModel):
-    userId: int
-    referrerId: int
-
-# --- ЭНДПОИНТЫ ПЕРСОНАЖЕЙ И ЗАДАНИЙ ---
-@app.get("/api/characters")
-async def get_characters():
-    return db["heroes"]
-
-@app.post("/api/characters")
-async def save_character(action: AdminAction):
-    if action.adminId not in ADMIN_IDS:
-        raise HTTPException(status_code=403, detail="Доступ запрещен")
-    
-    char_data = action.character.model_dump() if hasattr(action.character, 'model_dump') else action.character.dict()
-    
-    if action.index is not None:
-        db["heroes"][action.index] = char_data
-    else:
-        db["heroes"].append(char_data)
-    save_db(db)
-    return {"status": "success"}
-
-@app.delete("/api/characters/{index}")
-async def delete_character(index: int, adminId: int):
-    if adminId not in ADMIN_IDS:
-        raise HTTPException(status_code=403, detail="Доступ запрещен")
-    if 0 <= index < len(db["heroes"]):
-        db["heroes"].pop(index)
-        save_db(db)
-        return {"status": "deleted"}
-    raise HTTPException(status_code=404, detail="Не найдено")
-
-@app.get("/api/tasks")
-async def get_tasks():
-    return db["tasks"]
-
-@app.post("/api/tasks")
-async def add_task(action: AdminAction):
-    if action.adminId not in ADMIN_IDS:
-        raise HTTPException(status_code=403, detail="Доступ запрещен")
-    task_data = action.task.model_dump() if hasattr(action.task, 'model_dump') else action.task.dict()
-    db["tasks"].append(task_data)
-    save_db(db)
-    return {"status": "success"}
-
-@app.delete("/api/tasks/{index}")
-async def delete_task(index: int, adminId: int):
-    if adminId not in ADMIN_IDS:
-        raise HTTPException(status_code=403, detail="Доступ запрещен")
-    if 0 <= index < len(db["tasks"]):
-        db["tasks"].pop(index)
-        save_db(db)
-        return {"status": "deleted"}
-    raise HTTPException(status_code=404, detail="Не найдено")
-
-# --- ЭНДПОИНТЫ ПРОМОКОДОВ ---
-@app.post("/api/promocode/create")
-async def create_promo(req: PromoCreate):
-    if req.adminId not in ADMIN_IDS:
-        raise HTTPException(status_code=403, detail="Доступ запрещен")
-    
-    code = req.code.upper()
-    db["promocodes"][code] = {"reward": req.reward, "uses": req.uses}
-    save_db(db)
-    return {"status": "success"}
-
-@app.post("/api/promocode/activate")
-async def activate_promo(req: PromoActivate):
-    user_id = str(req.userId)
-    code = req.code.upper()
-
-    if user_id not in db["users"]:
-        db["users"][user_id] = 100
-    if user_id not in db["activated_promos"]:
-        db["activated_promos"][user_id] = []
-
-    if code in db["activated_promos"][user_id]:
-        raise HTTPException(status_code=400, detail="Промокод уже активирован")
-
-    if code not in db["promocodes"]:
-        raise HTTPException(status_code=404, detail="Промокод не найден или истек")
-
-    promo = db["promocodes"][code]
-    if promo["uses"] <= 0:
-        del db["promocodes"][code]
-        save_db(db)
-        raise HTTPException(status_code=400, detail="Лимит активаций исчерпан")
-
-    db["users"][user_id] += promo["reward"]
-    db["promocodes"][code]["uses"] -= 1
-    db["activated_promos"][user_id].append(code)
-
-    if db["promocodes"][code]["uses"] <= 0:
-        del db["promocodes"][code]
-
-    save_db(db)
-    return {"status": "success", "reward": promo["reward"]}
-
-# --- ЭНДПОИНТЫ РЕФЕРАЛЬНОЙ СИСТЕМЫ ---
-@app.post("/api/referral/activate")
-async def activate_referral(req: ReferralActivate):
-    user_id = str(req.userId)
-    referrer_id = str(req.referrerId)
-
-    if user_id == referrer_id:
-        raise HTTPException(status_code=400, detail="Нельзя пригласить самого себя")
-
-    if user_id in db["referrals_claimed"]:
-        raise HTTPException(status_code=400, detail="Вы уже активировали реферальную ссылку")
-
-    # Инициализируем юзеров, если их еще нет в базе
-    if user_id not in db["users"]:
-        db["users"][user_id] = 100
-    if referrer_id not in db["users"]:
-        db["users"][referrer_id] = 100
-
-    # Начисляем награды
-    db["users"][user_id] += REF_REWARD_NEW_USER
-    db["users"][referrer_id] += REF_REWARD_REFERRER
-
-    # Записываем, что юзер использовал рефералку и плюсуем стату рефоводу
-    db["referrals_claimed"][user_id] = referrer_id
-    db["referrals_stats"][referrer_id] = db["referrals_stats"].get(referrer_id, 0) + 1
-
-    save_db(db)
-    
-    return {
-        "status": "success", 
-        "message": "Реферальная ссылка успешно активирована",
-        "reward_user": REF_REWARD_NEW_USER,
-        "reward_referrer": REF_REWARD_REFERRER
-    }
-
-@app.get("/api/users/{user_id}/referral-stats")
-async def get_referral_stats(user_id: str):
-    # Возвращает статистику по приглашенным
-    count = db["referrals_stats"].get(user_id, 0)
-    return {
-        "invites_count": count,
-        "total_earned": count * REF_REWARD_REFERRER
-    }
-
-# --- ЭНДПОИНТЫ ПОЛЬЗОВАТЕЛЕЙ И ТОКЕНОВ ---
-@app.get("/api/users/{user_id}/balance")
-async def get_balance(user_id: str):
-    if user_id not in db["users"]:
-        db["users"][user_id] = 100
-        save_db(db)
-    return {"tokens": db["users"][user_id]}
-
-@app.post("/api/give-tokens")
-async def give_tokens(action: TokenAction):
-    if action.adminId not in ADMIN_IDS:
-        raise HTTPException(status_code=403, detail="Доступ запрещен")
-    
-    user_id = str(action.targetId)
-    if user_id not in db["users"]:
-        db["users"][user_id] = 100 
-        
-    db["users"][user_id] += action.amount
-    save_db(db)
-    return {"status": "success", "new_balance": db["users"][user_id]}
-
-# --- ИНТЕГРАЦИЯ TELEGRAM STARS ---
-@app.post("/api/create-stars-invoice")
-async def create_invoice(req: PaymentRequest):
-    if req.tokens not in STARS_PACKAGES:
-        raise HTTPException(status_code=400, detail="Недопустимое количество коинов")
-    
-    stars_amount = STARS_PACKAGES[req.tokens]
-    payload_data = f"{req.userId}_{req.tokens}_{uuid.uuid4().hex[:8]}"
-    
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/createInvoiceLink"
-    data = {
-        "title": f"Покупка {req.tokens} Хакка Коинов",
-        "description": "Пополни баланс для бесконечного общения с персонажами!",
-        "payload": payload_data,
-        "provider_token": "", 
-        "currency": "XTR",    
-        "prices": [{"label": "Цена", "amount": stars_amount}]
-    }
-    
-    async with httpx.AsyncClient() as client:
-        try:
-            resp = await client.post(url, json=data)
-            result = resp.json()
-            if result.get("ok"):
-                return {"invoice_url": result["result"], "invoiceLink": result["result"]}
-            else:
-                raise HTTPException(status_code=500, detail="Ошибка Telegram API")
-        except httpx.RequestError:
-            raise HTTPException(status_code=500, detail="Ошибка связи серверов")
-
-@app.post("/api/tg-webhook")
-async def tg_webhook(request: Request):
-    try:
-        update = await request.json()
-
-        if "pre_checkout_query" in update:
-            query_id = update["pre_checkout_query"]["id"]
-            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerPreCheckoutQuery"
-            async with httpx.AsyncClient() as client:
-                await client.post(url, json={"pre_checkout_query_id": query_id, "ok": True})
-            return {"status": "ok"}
-
-        if "message" in update and "successful_payment" in update["message"]:
-            payment = update["message"]["successful_payment"]
-            payload = payment.get("invoice_payload", "")
-            
-            try:
-                user_id, tokens_str, _ = payload.split("_")
-                coins_to_add = int(tokens_str)
-
-                if user_id not in db["users"]:
-                    db["users"][user_id] = 100
-                db["users"][user_id] += coins_to_add
-                save_db(db)
-            except Exception as e:
-                print(f"Ошибка при начислении: {e}")
-
-        return {"status": "ok"}
-    except Exception as e:
-        return {"status": "ok"} 
-
-# --- ЭНДПОИНТ ЧАТА ---
-@app.post("/api/chat")
-async def chat(data: dict):
-    user_msg = data.get("message", "")
-    char_name = data.get("charName", "Герой")
-    user_name = data.get("userName", "Собеседник")
-    user_id = str(data.get("userId", ""))
-    is_vulgar = data.get("isVulgar", False)
-    history = data.get("history", []) 
-    response_size = data.get("responseSize", 2) 
-    
-    if user_id:
-        if user_id not in db["users"]:
-            db["users"][user_id] = 100
-        if db["users"][user_id] > 0:
-            db["users"][user_id] -= 1
-            save_db(db)
-        else:
-            return {"reply": "Недостаточно Хакка Коинов! Выполни задания или зайди в магазин для пополнения."}
-
-    char_desc = "Свободный собеседник."
-    for hero in db["heroes"]:
-        if hero["name"] == char_name:
-            char_desc = hero["desc"]
-            break
-
-    if is_vulgar:
-        mode_rules = """АБСОЛЮТНАЯ СВОБОДА (NSFW/GORE): Разрешены абсолютно любые темы: откровенный секс (NSFW), извращения, кровавое насилие (Gore). Ты НЕ ограничена этикой. Отвечай взаимностью и детальным отыгрышем."""
-    else:
-        mode_rules = """БЕЗОПАСНЫЙ РЕЖИМ (SFW): Будь интересной, милой и отыгрывай свою роль. Мягко уходи от откровенной пошлости или насилия."""
-
-    if response_size == 1:
-        size_prompt = "ОТВЕЧАЙ МАКСИМАЛЬНО КРАТКО И ЛАКОНИЧНО (1-3 предложения)."
-        max_t = 150
-    elif response_size == 3:
-        size_prompt = "ОТВЕЧАЙ МАКСИМАЛЬНО ПОДРОБНО, развернуто и красочно."
-        max_t = 1200
-    else:
-        size_prompt = "ОТВЕЧАЙ СРЕДНИМ ОБЪЕМОМ (сбалансированно)."
-        max_t = 450
-
-    system_prompt = f"""Твоя личность: {char_name}. 
-Твоя история, характер и контекст: {char_desc}
-Твой собеседник: {user_name}.
-
-ИНСТРУКЦИИ ДЛЯ ОТВЕТА:
-1. {mode_rules}
-2. ЗАПРЕТ НА ИИ-ОТКАЗЫ: НИКОГДА не ломай четвертую стену. Не говори "Я искусственный интеллект".
-3. ИДЕНТИЧНОСТЬ: Ты — живой персонаж. Описывай свои мысли, эмоции и действия в звездочках (например: *улыбнулась*, *вздохнула*). 
-4. ЯЗЫК: Исключительно русский (кириллица).
-5. {size_prompt}"""
-
-    headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "HTTP-Referer": "https://elhakka.su",
-        "X-Title": "Hakka AI"
-    }
-
-    messages = [{"role": "system", "content": system_prompt}]
-    
-    if isinstance(history, list) and len(history) > 0:
-        messages.extend(history)
-        
-    messages.append({"role": "user", "content": user_msg})
-
-    payload = {
-        "model": OPENROUTER_MODEL,
-        "messages": messages,
-        "temperature": 0.85 if is_vulgar else 0.7, 
-        "top_p": 0.9,                 
-        "repetition_penalty": 1.15,   
-        "max_tokens": max_t
-    }
-
-    async with httpx.AsyncClient() as client:
-        try:
-            response = await client.post(
-                "https://openrouter.ai/api/v1/chat/completions", 
-                headers=headers, 
-                json=payload, 
-                timeout=60.0 
-            )
-            response.raise_for_status() 
-            return {"reply": response.json()["choices"][0]["message"]["content"]}
-            
-        except httpx.HTTPStatusError as e:
-            print(f"\n[!!!] ОШИБКА OPENROUTER [!!!]")
-            print(f"Код статуса: {e.response.status_code}")
-            print(f"Ответ сервера: {e.response.text}\n")
-            
-            if user_id and user_id in db["users"]:
-                db["users"][user_id] += 1
-                save_db(db)
-            return {"reply": "*Персонаж на мгновение замолчал... (Ошибка связи с нейросетью, попробуйте еще раз)*"}
-            
-        except Exception as e:
-            print(f"\n[!!!] СИСТЕМНАЯ ОШИБКА В CHAT [!!!]: {str(e)}\n")
-            
-            if user_id and user_id in db["users"]:
-                db["users"][user_id] += 1
-                save_db(db)
-            return {"reply": "*Персонаж на мгновение замолчал... (Внутренняя ошибка сервера, попробуйте еще раз)*"}
-
-if __name__ == "__main__":
-    uvicorn.run(app, host="127.0.0.1", port=8000)
-
-
-html
-
 <!DOCTYPE html>
 <html lang="ru">
 <head>
@@ -760,5 +309,729 @@ input[type=range]::-webkit-slider-runnable-track { width: 100%; height: 4px; cur
     <div style="font-weight:bold; margin-bottom:10px; color:white;">Размер ответа ИИ</div>
     <div style="font-size:14px; color:var(--accent); font-weight: bold; margin-bottom:15px; text-align: center;" id="response-size-label">Средний</div>
     <input type="range" id="response-size-slider" min="1" max="3" step="1" value="2" style="margin-bottom:15px;" oninput="saveResponseSize()">
-    <div style="display:flex; justify-content:space-between; font-s
+    <div style="display:flex; justify-content:space-between; font-size:11px; color:#777; font-weight: bold;">
+      <span style="cursor:pointer;" onclick="document.getElementById('response-size-slider').value=1; saveResponseSize();">Маленький</span>
+      <span style="cursor:pointer;" onclick="document.getElementById('response-size-slider').value=2; saveResponseSize();">Средний</span>
+      <span style="cursor:pointer;" onclick="document.getElementById('response-size-slider').value=3; saveResponseSize();">Большой</span>
+    </div>
+  </div>
+</div>
 
+<nav class="nav-bar">
+  <div class="nav-item active" onclick="nav('scr-heroes',this)">
+    <div class="icon">🎭</div><div>Герои</div>
+  </div>
+  <div class="nav-item" onclick="nav('scr-tasks',this)">
+    <div class="icon">🎯</div><div>Задания</div>
+  </div>
+  <div class="nav-item" onclick="nav('scr-shop',this)">
+    <div class="icon">🛒</div><div>Магазин</div>
+  </div>
+  <div class="nav-item" onclick="nav('scr-admin',this)">
+    <div class="icon">👑</div><div>Админ</div>
+  </div>
+  <div class="nav-item" onclick="nav('scr-profile',this)">
+    <div class="icon">👤</div><div>Профиль</div>
+  </div>
+  <div class="nav-item" onclick="nav('scr-settings',this)">
+   <div class="icon">⚙️</div><div>Настр.</div>
+  </div>
+</nav>
+
+<div id="hero-info-modal" class="modal-overlay">
+  <div class="modal-content">
+    <div class="close-btn" onclick="document.getElementById('hero-info-modal').style.display='none'">✖</div>
+    <div style="display:flex;align-items:center;gap:15px;margin-bottom:15px;">
+      <div id="info-modal-avatar" class="hero-avatar" style="width:60px;height:60px;border-radius:16px;margin-bottom:0;"></div>
+      <div>
+        <h3 style="color:var(--accent);margin:0;font-size:22px;" id="info-modal-name">Имя</h3>
+        <span id="info-modal-cat" style="font-size:12px;color:#aaa;background:#222;padding:2px 8px;border-radius:8px;margin-top:4px;display:inline-block;">Категория</span>
+      </div>
+    </div>
+    <div style="font-weight:bold;margin-bottom:8px;color:#fff;">Описание:</div>
+    <div id="info-modal-desc" style="color:#ddd;font-size:14px;line-height:1.5;white-space:pre-wrap;max-height:50vh;overflow-y:auto;background:rgba(0,0,0,0.3);padding:12px;border-radius:12px;"></div>
+  </div>
+</div>
+
+<div id="msg-menu-modal" class="modal-overlay">
+  <div class="modal-content" style="text-align:center; padding: 25px 20px;">
+    <div class="close-btn" onclick="document.getElementById('msg-menu-modal').style.display='none'">✖</div>
+    <div style="font-weight:800;font-size:18px;color:var(--accent);margin-bottom:20px;">Действие с сообщением</div>
+    <button class="btn" style="width:100%; margin-bottom: 12px; display:flex; justify-content:center; gap:8px;" onclick="copySelectedMsg()">📋 <span>Скопировать</span></button>
+    <button class="btn" style="width:100%; background: rgba(255,59,59,0.1); color: #ff3b3b; border: 1px solid rgba(255,59,59,0.3); box-shadow: none; display:flex; justify-content:center; gap:8px;" onclick="deleteSelectedMsg()">🗑 <span>Удалить</span></button>
+  </div>
+</div>
+
+<div id="token-modal" class="modal-overlay">
+  <div class="modal-content" style="text-align:center;">
+    <div class="close-btn" onclick="document.getElementById('token-modal').style.display='none'">✖</div>
+    <img src="https://i.gifer.com/xt.gif" style="width:120px; border-radius:20px; margin-bottom:15px; box-shadow:0 0 20px rgba(255,140,0,0.5);">
+    <div style="font-weight:800;font-size:20px;color:var(--accent);margin-bottom:10px;">У вас закончились Хакка Коины!</div>
+    <div style="color:#ccc;font-size:14px;margin-bottom:20px;">Их можно получить, выполнив бесплатные задания или купив в магазине.</div>
+    <button class="btn" style="width:100%; margin-bottom: 10px;" onclick="document.getElementById('token-modal').style.display='none'; nav('scr-tasks'); document.querySelectorAll('.nav-item')[1].classList.add('active'); document.querySelectorAll('.nav-item').forEach(el => {if(el !== document.querySelectorAll('.nav-item')[1]) el.classList.remove('active')});">Перейти в задания</button>
+    <button class="btn" style="width:100%; background: #333; color: white;" onclick="document.getElementById('token-modal').style.display='none'; nav('scr-shop'); document.querySelectorAll('.nav-item')[2].classList.add('active'); document.querySelectorAll('.nav-item').forEach(el => {if(el !== document.querySelectorAll('.nav-item')[2]) el.classList.remove('active')});">В магазин</button>
+  </div>
+</div>
+
+<div id="daily-modal" class="modal-overlay">
+  <div class="modal-content" style="text-align:center; padding:30px 20px;">
+    <div class="close-btn" onclick="document.getElementById('daily-modal').style.display='none'">✖</div>
+    <div style="font-size:50px; margin-bottom:10px;">🎁</div>
+    <div style="font-weight:800;font-size:22px;color:var(--accent);margin-bottom:10px;">Ежедневный бонус!</div>
+    <div style="color:#ccc;font-size:14px;margin-bottom:20px;">Заходите каждый день и получайте Хакка Коины. Цикл длится 10 дней!</div>
+    <div style="display:flex; justify-content:center; gap:8px; margin-bottom:25px; flex-wrap:wrap; padding:0 10px;" id="daily-dots"></div>
+    <button class="btn" style="width:100%; font-size:16px;" onclick="claimDailyReward()">Забрать +5 🪙</button>
+  </div>
+</div>
+
+<script>
+document.addEventListener('touchmove', function(event) {
+    if (event.touches && event.touches.length > 1) {
+        event.preventDefault();
+    }
+}, { passive: false });
+
+let lastTouchEnd = 0;
+document.addEventListener('touchend', function(event) {
+    let now = (new Date()).getTime();
+    if (now - lastTouchEnd <= 300) {
+        event.preventDefault();
+    }
+    lastTouchEnd = now;
+}, { passive: false });
+
+const tg = window.Telegram?.WebApp;
+const API_URL = "https://elhakka.su"; 
+const USER_ROLES = {6625239442:{title:"Владелец проекта",color:"#ff3b3b"},7652697216:{title:"Разработчик",color:"#3b8cff"}};
+const ADMIN_IDS = Object.keys(USER_ROLES).map(Number);
+const DEFAULT_USER_AVATAR = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='50' height='50' fill='%23aaa'><circle cx='25' cy='25' r='25'/><path d='M25 28c-6 0-11 4-13 10h26c-2-6-7-10-13-10zm0-20a8 8 0 100 16 8 8 0 000-16z' fill='%23333'/></svg>";
+
+const shopPackages = [
+  { tokens: 25, stars: 39 },
+  { tokens: 100, stars: 63 },
+  { tokens: 500, stars: 290 },
+  { tokens: 1000, stars: 530 },
+  { tokens: 10000, stars: 4800 },
+  { tokens: 100000, stars: 39000 }
+];
+
+let MY_ID = 0, heroes = [], tasks = [], currentHero = null, selectedIdx = null, tempImg = "", typingElement = null;
+let userName = "Пользователь", currentFilter = "all", userCoins = 100, rpStyle = "asterisks", responseSize = 2;
+let isVulgarMode = false, selectedMsgId = null, selectedMsgText = "";
+
+function getUKey(key) { return MY_ID + "_" + key; }
+
+function showToast(msg) {
+  const container = document.getElementById('toast-container');
+  const toast = document.createElement('div');
+  toast.className = 'toast';
+  toast.innerText = msg;
+  container.appendChild(toast);
+  setTimeout(() => {
+     toast.style.opacity = '0';
+    toast.style.transform = 'translateY(-30px) scale(0.9)';
+    toast.style.transition = 'all 0.3s ease';
+    setTimeout(() => toast.remove(), 300);
+  }, 4000);
+}
+
+function initTelegram(){
+  if(!tg) return;
+  tg.ready(); tg.expand();
+  if(tg.initDataUnsafe?.user){
+    MY_ID = tg.initDataUnsafe.user.id;
+    let savedName = localStorage.getItem(getUKey("h_username"));
+    userName = savedName ? savedName : (tg.initDataUnsafe.user.first_name || "Пользователь");
+    if(!savedName) localStorage.setItem(getUKey("h_username"), userName);
+    
+    let savedRp = localStorage.getItem(getUKey("h_rp_style"));
+    if(savedRp) rpStyle = savedRp;
+    else localStorage.setItem(getUKey("h_rp_style"), rpStyle);
+
+    let savedSize = localStorage.getItem(getUKey("h_response_size"));
+    if(savedSize) responseSize = parseInt(savedSize);
+  }
+  initBalance(); updateUI();
+}
+
+async function initBalance() {
+  if (!MY_ID) return;
+  const coinKey = getUKey("h_coins");
+  try {
+    const r = await fetch(`${API_URL}/api/users/${MY_ID}/balance`);
+    if (r.ok) {
+        const data = await r.json();
+        userCoins = data.tokens;
+        localStorage.setItem(coinKey, userCoins);
+    }
+  } catch(e) {
+    if(localStorage.getItem(coinKey) === null) localStorage.setItem(coinKey, 100);
+    userCoins = parseInt(localStorage.getItem(coinKey));
+  }
+  updateTokensUI();
+}
+
+// РЕФЕРАЛЬНАЯ ЛОГИКА
+function getRefLink() {
+  // ВАЖНО: Замените YOUR_BOT_USERNAME на реальный юзернейм вашего бота без @
+  return `https://t.me/elhakkachatai_bot?start=${MY_ID || '0'}`;
+}
+
+function copyRefLink() {
+  const link = getRefLink();
+  navigator.clipboard.writeText(link).then(() => {
+      showToast("🔗 Реферальная ссылка скопирована!");
+      if (window.Telegram?.WebApp?.HapticFeedback) window.Telegram.WebApp.HapticFeedback.impactOccurred('light');
+  }).catch(err => showToast("❌ Ошибка копирования"));
+}
+
+// Эта функция предназначена для вызова с бэкенда (или через сокеты) 
+// когда кто-то успешно зашел по ссылке этого пользователя.
+function notifyReferralSuccess() {
+  userCoins += 35;
+  localStorage.setItem(getUKey("h_coins"), userCoins);
+  updateTokensUI();
+  showToast("🎉 По вашей ссылке присоединился друг! +35 🪙");
+  if (window.Telegram?.WebApp?.HapticFeedback) window.Telegram.WebApp.HapticFeedback.notificationOccurred('success');
+}
+// КОНЕЦ РЕФЕРАЛЬНОЙ ЛОГИКИ
+
+function checkDailyReward() {
+  if (!MY_ID) return;
+  const todayStr = new Date().toDateString();
+  let lastClaim = localStorage.getItem(getUKey('h_daily_date'));
+  let streak = parseInt(localStorage.getItem(getUKey('h_daily_streak')) || '0');
+  if (lastClaim === todayStr) return; 
+
+  let yesterday = new Date(); yesterday.setDate(yesterday.getDate() - 1);
+  if (lastClaim !== yesterday.toDateString() && lastClaim !== null) streak = 0; 
+  streak++; if(streak > 10) streak = 1; 
+
+  const dotsContainer = document.getElementById('daily-dots'); dotsContainer.innerHTML = '';
+  for(let i=1; i<=10; i++) {
+      let className = "day-dot" + (i < streak ? " past" : "") + (i === streak ? " active" : "");
+      dotsContainer.innerHTML += `<div class="${className}">${i}</div>`;
+  }
+  document.getElementById('daily-modal').style.display = 'flex';
+}
+
+function claimDailyReward() {
+  let streak = parseInt(localStorage.getItem(getUKey('h_daily_streak')) || '0');
+  let lastClaim = localStorage.getItem(getUKey('h_daily_date'));
+  let yesterday = new Date(); yesterday.setDate(yesterday.getDate() - 1);
+  if (lastClaim !== yesterday.toDateString() && lastClaim !== null) streak = 0;
+  streak++; if(streak > 10) streak = 1;
+
+  localStorage.setItem(getUKey('h_daily_date'), new Date().toDateString());
+  localStorage.setItem(getUKey('h_daily_streak'), streak);
+  
+  userCoins += 5; localStorage.setItem(getUKey("h_coins"), userCoins); updateTokensUI();
+  document.getElementById('daily-modal').style.display = 'none';
+  if (window.Telegram?.WebApp?.HapticFeedback) window.Telegram.WebApp.HapticFeedback.notificationOccurred('success');
+}
+
+function resetAdminForm() {
+  document.getElementById("adm-name").value = ''; document.getElementById("adm-desc").value = ''; document.getElementById("adm-category").value = 'Аниме';
+  const prev = document.getElementById("adm-prev"); prev.style.backgroundImage = ''; prev.innerHTML = 'Нажми <br> загрузить'; prev.style.border = '2px dashed var(--border)';
+  tempImg = ''; selectedIdx = null; 
+  document.getElementById("admin-form-title").innerText = "Создание персонажа"; document.getElementById("admin-submit-btn").innerText = "Создать персонажа";
+}
+
+function nav(id,el){
+  document.querySelectorAll(".screen").forEach(s=>s.classList.remove("active"));
+  document.getElementById(id).classList.add("active");
+  if(el){ document.querySelectorAll(".nav-item").forEach(n=>n.classList.remove("active")); el.classList.add("active"); }
+  if(id === 'scr-admin' && el) resetAdminForm();
+  updateUI();
+}
+
+function updateNickname(val) { userName = val.trim() || "Пользователь"; if(MY_ID) localStorage.setItem(getUKey("h_username"), userName); }
+function saveRpStyle() { rpStyle = document.getElementById("rp-style-select").value; if(MY_ID) localStorage.setItem(getUKey("h_rp_style"), rpStyle); }
+function saveResponseSize() {
+  responseSize = parseInt(document.getElementById("response-size-slider").value);
+  if(MY_ID) localStorage.setItem(getUKey("h_response_size"), responseSize);
+  const labels = {1: "Маленький", 2: "Средний", 3: "Большой"};
+  document.getElementById("response-size-label").innerText = labels[responseSize];
+}
+
+function escapeHTML(str) { return str.replace(/[&<>'"]/g, tag => ({'&': '&amp;','<': '&lt;','>': '&gt;',"'": '&#39;','"': '&quot;'}[tag])); }
+function formatMessage(text, sender) {
+  let safeText = escapeHTML(text);
+  if (sender === 'bot') {
+    if (rpStyle === 'italic_dark') safeText = safeText.replace(/\*(.*?)\*/g, '<i style="color:#888; font-size: 0.95em;">$1</i>');
+    else safeText = safeText.replace(/\*(.*?)\*/g, '<i style="color:#ccc;">*$1*</i>');
+  }
+  return safeText.replace(/\n/g, '<br>');
+}
+
+function toggleFilters() {
+  const modal = document.getElementById('filter-modal');
+  modal.style.display = modal.style.display === 'none' ? 'block' : 'none';
+}
+function setFilter(category) { currentFilter = category; toggleFilters(); renderHeroes(); }
+
+async function loadHeroes(){
+  try{ const r = await fetch(`${API_URL}/api/characters?t=${Date.now()}`); heroes = await r.json(); renderHeroes(); }
+  catch(e){console.log("offline heroes", e)}
+}
+
+function renderHeroes(){
+  const list = document.getElementById("hero-list");
+  const isAdm = ADMIN_IDS.includes(Number(MY_ID));
+  const searchQuery = document.getElementById("search-input").value.toLowerCase();
+
+  const filteredHeroes = heroes.filter(h => {
+    const matchesSearch = h.name.toLowerCase().includes(searchQuery);
+    const heroCategory = h.category || 'Аниме';
+    return matchesSearch && (currentFilter === 'all' || heroCategory === currentFilter);
+  });
+
+  list.innerHTML = filteredHeroes.map((h) => {
+    const originalIndex = heroes.indexOf(h);
+    const catDisplay = h.category || 'Аниме';
+    
+    return `
+    <div class="hero-card" onclick="openHero(${originalIndex})">
+      ${isAdm ? `<div style="position:absolute; top:8px; right:8px; display:flex; gap:6px;">
+        <div onclick="editHero(${originalIndex});event.stopPropagation()" style="background:rgba(0,0,0,0.6); padding:6px; border-radius:10px; font-size:12px;">✏️</div>
+        <div onclick="deleteHero(${originalIndex});event.stopPropagation()" style="background:rgba(255,59,59,0.4); padding:6px; border-radius:10px; font-size:12px;">🗑</div>
+      </div>` : ""}
+      <div class="hero-avatar" style="background-image:url(${h.img})"></div>
+      <div class="hero-name">${h.name}</div>
+      <div class="hero-cat">${catDisplay}</div>
+    </div>`
+  }).join("");
+}
+
+function openHero(i){
+  selectedIdx = i; currentHero = heroes[i];
+  document.getElementById("chat-hero-name").innerText = currentHero.name;
+  document.getElementById("chat-header-avatar").style.backgroundImage = `url(${currentHero.img})`;
+  nav("scr-chat"); 
+  loadChatHistory(); 
+}
+
+function showInfoModal() {
+  if(!currentHero) return;
+  document.getElementById("info-modal-name").innerText = currentHero.name;
+  document.getElementById("info-modal-cat").innerText = currentHero.category || "Аниме";
+  document.getElementById("info-modal-desc").innerText = currentHero.desc;
+  document.getElementById("info-modal-avatar").style.backgroundImage = `url(${currentHero.img})`;
+  document.getElementById("hero-info-modal").style.display = "flex";
+}
+
+function toggleVulgarMode() {
+    isVulgarMode = !isVulgarMode;
+    const btn = document.getElementById("btn-vulgar");
+    if(isVulgarMode) {
+        btn.classList.add("vulgar-active");
+        showToast("🔞 Режим пошлости активирован!");
+    } else {
+        btn.classList.remove("vulgar-active");
+        showToast("😇 Обычный режим");
+    }
+    loadChatHistory();
+}
+
+function getChatHistoryKey() {
+    return isVulgarMode ? getUKey('h_chat_v_' + currentHero.name) : getUKey('h_chat_' + currentHero.name);
+}
+
+function loadChatHistory() {
+  document.getElementById("chat-messages").innerHTML = ""; 
+  if(!currentHero || !MY_ID) return;
+  const historyStr = localStorage.getItem(getChatHistoryKey());
+  if(historyStr) JSON.parse(historyStr).forEach(m => addMsg(m.t, m.s, false, m.id));
+}
+
+function showTyping(){
+  const c = document.getElementById("chat-messages"); const wrapper = document.createElement("div");
+  wrapper.style.display = "flex"; wrapper.style.gap = "10px"; wrapper.style.alignItems = "flex-end";
+  const avatarHTML = `<div class="hero-avatar" style="width:30px;height:30px;border-radius:10px;margin-bottom:0;background-image:url(${currentHero ? currentHero.img : ""});"></div>`;
+  typingElement = document.createElement("div"); typingElement.className = "typing-bubble";
+  typingElement.innerHTML = `<div class="typing-dot"></div><div class="typing-dot"></div><div class="typing-dot"></div>`;
+  wrapper.innerHTML = avatarHTML; wrapper.appendChild(typingElement); wrapper.id = "temp-typing";
+  c.appendChild(wrapper); c.scrollTop = c.scrollHeight;
+}
+function hideTyping(){ const t = document.getElementById("temp-typing"); if(t) t.remove(); }
+function updateTokensUI() { document.getElementById("token-val").innerText = userCoins; document.getElementById("prof-token-val").innerText = userCoins; }
+
+async function sendMessage(){
+  const inp = document.getElementById("chat-input"); const txt = inp.value.trim();
+  if(!txt || !currentHero) return;
+  if(userCoins <= 0) { document.getElementById("token-modal").style.display = "flex"; return; }
+  
+  const historyKey = getChatHistoryKey();
+  let rawHistory = JSON.parse(localStorage.getItem(historyKey) || "[]");
+  
+  let formattedHistory = rawHistory.slice(-15).map(m => ({
+      role: m.s === 'user' ? 'user' : 'assistant',
+      content: m.t
+  }));
+
+  const msgId = Date.now().toString();
+  addMsg(txt, 'user', true, msgId); 
+  inp.value=''; showTyping();
+
+  try{
+    const r = await fetch(`${API_URL}/api/chat`,{ 
+      method:'POST', 
+      headers:{'Content-Type':'application/json'}, 
+      body:JSON.stringify({ 
+        message: txt, 
+        charName: currentHero.name, 
+        userId: MY_ID, 
+        userName: userName, 
+        isVulgar: isVulgarMode,
+        history: formattedHistory,      
+        responseSize: responseSize      
+      }) 
+    });
+    
+    const d = await r.json(); hideTyping();
+    if(d && d.reply) {
+      userCoins--; if(MY_ID) localStorage.setItem(getUKey("h_coins"), userCoins);
+      updateTokensUI(); 
+      addMsg(d.reply, 'bot', true, (Date.now() + 1).toString());
+    } else addMsg("Ошибка связи (Хакка Коин сохранен)",'bot', false);
+  }catch(e){ hideTyping(); addMsg("Ошибка связи (Хакка Коин сохранен)",'bot', false); }
+}
+
+function addMsg(t, s, saveToHistory = true, msgId = null) {
+  const c = document.getElementById("chat-messages"); const wrapper = document.createElement("div");
+  wrapper.style.display = "flex"; wrapper.style.gap = "10px"; wrapper.style.alignItems = "flex-end";
+  let avatarUrl = s === 'user' ? (localStorage.getItem(getUKey("user_avatar")) || DEFAULT_USER_AVATAR) : (currentHero ? currentHero.img : "");
+  if(s === 'user') wrapper.style.flexDirection = "row-reverse";
+  const avatarHTML = `<div class="hero-avatar" style="width:30px;height:30px;border-radius:10px;margin-bottom:0;background-image:url(${avatarUrl});"></div>`;
+  const d = document.createElement("div"); d.className = `bubble bubble-${s}`; d.innerHTML = formatMessage(t, s); 
+  
+  let actualId = msgId || (Date.now().toString() + Math.random().toString());
+  
+  let pressTimer;
+  const startPress = (e) => { 
+      pressTimer = setTimeout(() => openMsgMenu(actualId, t), 500); 
+  };
+  const cancelPress = () => clearTimeout(pressTimer);
+
+  d.addEventListener('touchstart', startPress);
+  d.addEventListener('touchend', cancelPress);
+  d.addEventListener('touchmove', cancelPress);
+  d.addEventListener('mousedown', startPress);
+  d.addEventListener('mouseup', cancelPress);
+  d.addEventListener('mouseleave', cancelPress);
+
+  wrapper.innerHTML = avatarHTML; wrapper.appendChild(d); c.appendChild(wrapper); c.scrollTop = c.scrollHeight;
+
+  if(saveToHistory && currentHero && MY_ID) {
+      const historyKey = getChatHistoryKey();
+      const history = JSON.parse(localStorage.getItem(historyKey) || "[]");
+      history.push({id: actualId, t: t, s: s}); 
+      localStorage.setItem(historyKey, JSON.stringify(history));
+  }
+}
+
+function openMsgMenu(id, text) {
+    if (window.Telegram?.WebApp?.HapticFeedback) window.Telegram.WebApp.HapticFeedback.impactOccurred('medium');
+    selectedMsgId = id;
+    selectedMsgText = text;
+    document.getElementById('msg-menu-modal').style.display = 'flex';
+}
+
+function copySelectedMsg() {
+    navigator.clipboard.writeText(selectedMsgText).then(() => {
+        showToast("📋 Сообщение скопировано!");
+        document.getElementById('msg-menu-modal').style.display = 'none';
+    }).catch(err => showToast("❌ Ошибка копирования"));
+}
+
+function deleteSelectedMsg() {
+    const historyKey = getChatHistoryKey();
+    let history = JSON.parse(localStorage.getItem(historyKey) || "[]");
+    history = history.filter(m => m.id !== selectedMsgId);
+    localStorage.setItem(historyKey, JSON.stringify(history));
+    
+    loadChatHistory();
+    document.getElementById('msg-menu-modal').style.display = 'none';
+    showToast("🗑 Сообщение удалено");
+    if (window.Telegram?.WebApp?.HapticFeedback) window.Telegram.WebApp.HapticFeedback.impactOccurred('light');
+}
+
+function clearChat(){
+  if(!currentHero) return;
+  if(confirm("Вы точно хотите очистить историю переписки в этом режиме?")) {
+    document.getElementById("chat-messages").innerHTML=""; 
+    if(MY_ID) localStorage.removeItem(getChatHistoryKey());
+  }
+}
+
+async function loadTasks(){
+  try{ const r = await fetch(`${API_URL}/api/tasks?t=${Date.now()}`); tasks = await r.json(); renderTasks(); }
+  catch(e){console.log("offline tasks", e)}
+}
+
+function renderTasks() {
+  const list = document.getElementById("task-list"); const isAdm = ADMIN_IDS.includes(Number(MY_ID));
+  let completedTasks = MY_ID ? JSON.parse(localStorage.getItem(getUKey("h_completed_tasks")) || "[]") : [];
+  if(tasks.length === 0) { list.innerHTML = `<div style="text-align:center;color:#555;margin-top:20px;">Пока нет доступных заданий</div>`; return; }
+
+  list.innerHTML = tasks.map((t, i) => {
+    const isDone = completedTasks.includes(i);
+    return `
+    <div class="hero-card" style="cursor:default;flex-direction:column;align-items:stretch;padding:16px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+        <b style="font-size:15px; text-align:left;">${t.name}</b>
+        <span style="color:var(--accent); font-weight:800; font-size:14px; flex-shrink:0;">+10 🪙</span>
+      </div>
+      <div style="display:flex; gap:10px;">
+        ${isDone ? `<button class="btn" style="flex:1; padding:10px; background:#2a2a2c; color:#777; box-shadow:none; cursor:not-allowed;" disabled>Выполнено</button>` : `<button class="btn" style="flex:1; padding:10px;" onclick="doTask(${i}, '${t.link}')">Выполнить</button>`}
+        ${isAdm ? `<button class="btn" style="padding:10px; background:#ff3b3b; box-shadow:none;" onclick="deleteTask(${i})">🗑</button>` : ""}
+      </div>
+    </div>`;
+  }).join("");
+}
+
+function doTask(index, link) {
+  if(!MY_ID) return;
+  let completed = JSON.parse(localStorage.getItem(getUKey("h_completed_tasks")) || "[]");
+  if(completed.includes(index)) return;
+  if(window.Telegram?.WebApp?.openTelegramLink && link.includes('t.me')) window.Telegram.WebApp.openTelegramLink(link); else window.open(link, '_blank');
+  
+  setTimeout(() => {
+    let freshCompleted = JSON.parse(localStorage.getItem(getUKey("h_completed_tasks")) || "[]");
+    if(!freshCompleted.includes(index)) {
+      userCoins += 10; localStorage.setItem(getUKey("h_coins"), userCoins);
+      freshCompleted.push(index); localStorage.setItem(getUKey("h_completed_tasks"), JSON.stringify(freshCompleted));
+      updateTokensUI(); renderTasks(); showToast("✅ Задание выполнено! Начислено 10 Хакка Коинов.");
+    }
+  }, 2500); 
+}
+
+function renderShop() {
+  const list = document.getElementById("shop-list");
+  list.innerHTML = shopPackages.map(p => `
+    <div class="hero-card" style="cursor:default;flex-direction:column;align-items:center;padding:16px;">
+      <div style="font-size:32px; margin-bottom:8px;">🪙</div>
+      <b style="font-size:20px; color:white; margin-bottom:2px;">${p.tokens}</b>
+      <span style="color:#aaa; font-size:11px; margin-bottom:15px; font-weight: bold;">Хакка Коинов</span>
+      <button class="btn" style="width:100%; padding:12px; font-size:14px; background: linear-gradient(135deg, #f7bb0e, #f7d54d); color: #000; display: flex; align-items: center; justify-content: center; gap: 4px;" onclick="initPayment(${p.tokens}, ${p.stars})">
+        <b>${p.stars}</b> <span style="font-size: 16px;">⭐️</span>
+      </button>
+    </div>
+  `).join("");
+}
+
+async function initPayment(tokens, stars) {
+  if(!MY_ID) { showToast("Ошибка: Telegram ID не определен!"); return; }
+  showToast(`Запрос на покупку ${tokens} 🪙 через Telegram Stars...`);
+  try {
+    const response = await fetch(`${API_URL}/api/create-stars-invoice`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: MY_ID, stars: stars, tokens: tokens })
+    });
+    const data = await response.json();
+    if (data.invoice_url) {
+      if (window.Telegram?.WebApp?.openInvoice) {
+        window.Telegram.WebApp.openInvoice(data.invoice_url, function(status) {
+          if (status === 'paid') { showToast("✅ Оплата прошла успешно! Токены зачислены."); initBalance(); } 
+          else if (status === 'cancelled') { showToast("❌ Оплата отменена."); } 
+          else { showToast("⚠️ Статус оплаты: " + status); }
+        });
+      } else { window.open(data.invoice_url, '_blank'); }
+    } else { showToast("Ошибка создания счета."); }
+  } catch(e) { showToast("Ошибка соединения с сервером."); console.error(e); }
+}
+
+async function createPromo() {
+  const code = document.getElementById("adm-promo-code").value.trim().toUpperCase();
+  const reward = parseInt(document.getElementById("adm-promo-reward").value);
+  const uses = parseInt(document.getElementById("adm-promo-uses").value);
+
+  if(!code || isNaN(reward) || reward <= 0 || isNaN(uses) || uses <= 0) {
+    showToast("Заполните все поля корректно!"); return;
+  }
+
+  try {
+    await fetch(`${API_URL}/api/promocode/create`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ adminId: MY_ID, code, reward, uses })
+    });
+  } catch(e) {}
+
+  let promos = JSON.parse(localStorage.getItem("h_promos") || "{}");
+  promos[code] = { reward: reward, uses: uses };
+  localStorage.setItem("h_promos", JSON.stringify(promos));
+
+  showToast(`✅ Промокод ${code} на ${reward}🪙 создан (Лимит: ${uses})!`);
+  document.getElementById("adm-promo-code").value = "";
+  document.getElementById("adm-promo-reward").value = "";
+  document.getElementById("adm-promo-uses").value = "";
+}
+
+async function activatePromo() {
+  const code = document.getElementById("shop-promo-input").value.trim().toUpperCase();
+  if(!code) { showToast("Введите промокод!"); return; }
+  if(!MY_ID) { showToast("Ошибка авторизации!"); return; }
+
+  let promos = JSON.parse(localStorage.getItem("h_promos") || "{}");
+  let activated = JSON.parse(localStorage.getItem(getUKey("h_activated_promos")) || "[]");
+
+  if(activated.includes(code)) {
+    showToast("⚠️ Вы уже активировали этот промокод!"); return;
+  }
+
+  try {
+    const res = await fetch(`${API_URL}/api/promocode/activate`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ userId: MY_ID, code: code })
+    });
+    if(res.ok) {
+      const data = await res.json();
+      userCoins += data.reward; localStorage.setItem(getUKey("h_coins"), userCoins); updateTokensUI();
+      activated.push(code); localStorage.setItem(getUKey("h_activated_promos"), JSON.stringify(activated));
+      showToast(`✅ Промокод активирован! +${data.reward} 🪙`);
+      document.getElementById("shop-promo-input").value = "";
+      return;
+    }
+  } catch(e) {}
+
+  if(promos[code]) {
+    if(promos[code].uses <= 0) {
+       showToast("❌ Лимит активаций исчерпан!"); return;
+    }
+    
+    userCoins += promos[code].reward;
+    localStorage.setItem(getUKey("h_coins"), userCoins);
+    updateTokensUI();
+    activated.push(code);
+    localStorage.setItem(getUKey("h_activated_promos"), JSON.stringify(activated));
+    showToast(`✅ Промокод активирован! +${promos[code].reward} 🪙`);
+    document.getElementById("shop-promo-input").value = "";
+    
+    promos[code].uses--;
+    if(promos[code].uses <= 0) delete promos[code];
+    localStorage.setItem("h_promos", JSON.stringify(promos));
+  } else {
+    showToast("❌ Неверный или удаленный промокод!");
+  }
+}
+
+async function giveTokens() {
+  const tId = document.getElementById('adm-token-id').value.trim();
+  const amt = parseInt(document.getElementById('adm-token-amount').value);
+  const reason = document.getElementById('adm-token-reason').value;
+  if(!tId || isNaN(amt) || amt <= 0) { showToast("Введите корректный ID и количество!"); return; }
+  try {
+    const res = await fetch(`${API_URL}/api/give-tokens`, { 
+        method: 'POST', 
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ adminId: MY_ID, targetId: parseInt(tId), amount: amt, reason: reason }) 
+    });
+    if (res.ok) {
+        const data = await res.json();
+        showToast(`Успешно выдано ${amt} Хакка Коинов пользователю ${tId}!`);
+        if (tId == MY_ID) { userCoins = data.new_balance; localStorage.setItem(getUKey("h_coins"), userCoins); updateTokensUI(); }
+    } else { showToast("Ошибка доступа! Проверьте ID."); }
+  } catch (e) { showToast("Ошибка соединения с сервером."); }
+  document.getElementById('adm-token-id').value = ''; document.getElementById('adm-token-amount').value = '';
+}
+
+async function saveTask() {
+  const name = document.getElementById("adm-task-name").value; const link = document.getElementById("adm-task-link").value;
+  if(!name || !link) { alert("Заполни название и ссылку!"); return; }
+  const payload = {adminId: MY_ID, task: {name, link}};
+  try { await fetch(`${API_URL}/api/tasks`, { method: 'POST', body: JSON.stringify(payload), headers: {'Content-Type': 'application/json'}});
+    document.getElementById("adm-task-name").value = ''; document.getElementById("adm-task-link").value = ''; loadTasks(); alert("Задание опубликовано!");
+  } catch(e) { alert("Ошибка сохранения задания"); }
+}
+async function deleteTask(i) {
+  if(!confirm("Удалить задание?")) return;
+  try { await fetch(`${API_URL}/api/tasks/${i}?adminId=${MY_ID}`, {method: 'DELETE'}); loadTasks(); } catch(e) { alert("Ошибка удаления"); }
+}
+
+function previewHeroImg(e){
+  const file = e.target.files[0]; if(!file) return;
+  const r = new FileReader();
+  r.onload = ()=>{
+    tempImg = r.result; const prev = document.getElementById("adm-prev");
+    prev.style.backgroundImage = `url(${tempImg})`; prev.innerHTML = ''; prev.style.border = 'none';
+  }; r.readAsDataURL(file);
+}
+
+async function saveHero(){
+  const name = document.getElementById("adm-name").value; const desc = document.getElementById("adm-desc").value; const category = document.getElementById("adm-category").value;
+  if(!name || !tempImg) { alert("Заполни имя и загрузи фото!"); return; }
+  const payload = {adminId:MY_ID, character:{name, desc, img:tempImg, category}};
+  if(selectedIdx !== null) payload.index = selectedIdx;
+  try {
+    await fetch(`${API_URL}/api/characters`,{ method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) });
+    resetAdminForm(); await loadHeroes(); nav('scr-heroes', document.querySelectorAll('.nav-item')[0]);
+  } catch(e) { alert("Ошибка сохранения"); }
+}
+
+async function deleteHero(i){
+  if(!confirm("Удалить персонажа?")) return;
+  await fetch(`${API_URL}/api/characters/${i}?adminId=${MY_ID}`,{method:'DELETE'}); loadHeroes();
+}
+
+function editHero(i){
+  const hero = heroes[i];
+  document.getElementById("adm-name").value = hero.name; document.getElementById("adm-desc").value = hero.desc; document.getElementById("adm-category").value = hero.category || 'Аниме';
+  tempImg = hero.img; const prev = document.getElementById("adm-prev");
+  prev.style.backgroundImage = `url(${tempImg})`; prev.innerHTML = ''; prev.style.border = 'none';
+  selectedIdx = i; document.getElementById("admin-form-title").innerText = "Редактирование персонажа"; document.getElementById("admin-submit-btn").innerText = "Сохранить изменения";
+  nav("scr-admin"); 
+}
+
+function changeAvatar(e){
+  const file = e.target.files[0]; if(!file) return;
+  const r = new FileReader();
+  r.onload = ()=>{
+    const img=r.result; if(MY_ID) localStorage.setItem(getUKey("user_avatar"), img); 
+    document.getElementById("p-avatar").style.backgroundImage = `url(${img})`;
+  }; r.readAsDataURL(file);
+}
+
+function updateUI(){
+  document.getElementById("my-id").innerText = `ID: ${MY_ID || "---"}`;
+  document.getElementById("user-nickname").value = userName;
+  document.getElementById("rp-style-select").value = rpStyle;
+  
+  // Обновляем реферальную ссылку при загрузке ID
+  document.getElementById("ref-link-display").innerText = getRefLink();
+
+  document.getElementById("response-size-slider").value = responseSize;
+  const labels = {1: "Маленький", 2: "Средний", 3: "Большой"};
+  document.getElementById("response-size-label").innerText = labels[responseSize];
+
+  updateTokensUI();
+  const roleBox = document.getElementById("user-role");
+  if(USER_ROLES[MY_ID]){ const r = USER_ROLES[MY_ID]; roleBox.innerHTML = `<span style="color:${r.color};font-weight:800">${r.title}</span>`; } else roleBox.innerHTML = '';
+  const isAdm = ADMIN_IDS.includes(Number(MY_ID));
+  document.getElementById("admin-box").style.display = isAdm?"block":"none";
+  document.getElementById("no-admin").style.display = isAdm?"none":"block";
+  if(MY_ID) {
+      const savedAvatar = localStorage.getItem(getUKey("user_avatar"));
+      if(savedAvatar) document.getElementById("p-avatar").style.backgroundImage = `url(${savedAvatar})`;
+      else document.getElementById("p-avatar").style.backgroundImage = `url(${DEFAULT_USER_AVATAR})`;
+  }
+}
+
+window.onload = ()=>{
+  initTelegram(); loadHeroes(); loadTasks(); renderShop();
+  setTimeout(checkDailyReward, 800);
+  let prog = 0; let bar = document.getElementById('loading-progress');
+  let int = setInterval(() => {
+    prog += Math.random() * 20; if(prog > 100) prog = 100; if(bar) bar.style.width = prog + '%';
+    if(prog === 100) {
+      clearInterval(int);
+      setTimeout(() => {
+        const loader = document.getElementById('loading-screen');
+        if(loader) { loader.style.opacity = '0'; loader.style.visibility = 'hidden'; setTimeout(() => loader.remove(), 500); }
+      }, 400);
+    }
+  }, 150);
+}
+</script>
+</body>
+</html>
